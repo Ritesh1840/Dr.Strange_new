@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Doctor Strange</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000;overflow:hidden;}
+#webcam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);}
+#canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;}
+.sfx{
+  position:absolute;pointer-events:none;display:none;
+  mix-blend-mode:screen;transform:translate(-50%,-50%);
+  z-index:3;filter:brightness(1.7) saturate(1.4);
+}
+#one-vid{width:1400px;}
+#two-vid{width:1800px;}
+</style>
+</head>
+<body>
+<video id="webcam" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+<video id="one-vid" class="sfx" muted loop playsinline src="assets/StrangeOneHand.mp4"></video>
+<video id="two-vid" class="sfx" muted loop playsinline src="assets/StangeTwoHands.mp4"></video>
+
+<script>
+const webcam = document.getElementById('webcam');
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const oneVid = document.getElementById('one-vid');
+const twoVid = document.getElementById('two-vid');
+const TWO_PI = Math.PI * 2;
+
+const MCPS  = [2,5,9,13,17];
+const CONN  = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[0,9],[9,10],[10,11],[11,12],
+               [0,13],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17]];
+const FACES = [[0,1,5],[1,2,5],[2,5,9],[5,6,9],[6,7,9],[7,8,12],[9,10,12],[10,11,12],
+               [0,5,17],[5,9,13],[9,13,17],[13,14,17],[14,15,17],[15,16,20],[17,18,20],[18,19,20]];
+
+function toDisplay(lms){
+  const W=window.innerWidth,H=window.innerHeight;
+  const cW=webcam.videoWidth||1280,cH=webcam.videoHeight||720;
+  const sc=Math.max(W/cW,H/cH),ox=(W-cW*sc)/2,oy=(H-cH*sc)/2;
+  return lms.map(l=>[(1-l.x)*cW*sc+ox,l.y*cH*sc+oy]);
+}
+function palmCtr(px){
+  const pts=[px[0],...MCPS.map(i=>px[i])];
+  return[pts.reduce((s,p)=>s+p[0],0)/pts.length,pts.reduce((s,p)=>s+p[1],0)/pts.length];
+}
+
+function drawMesh(px){
+  ctx.save();ctx.globalAlpha=0.25;ctx.fillStyle='#2a0000';
+  for(const[a,b,c]of FACES){ctx.beginPath();ctx.moveTo(px[a][0],px[a][1]);ctx.lineTo(px[b][0],px[b][1]);ctx.lineTo(px[c][0],px[c][1]);ctx.closePath();ctx.fill();}
+  ctx.restore();
+  ctx.save();ctx.strokeStyle='#cc0000';ctx.lineWidth=2;ctx.shadowBlur=12;ctx.shadowColor='#ff2200';
+  for(const[a,b]of CONN){ctx.beginPath();ctx.moveTo(px[a][0],px[a][1]);ctx.lineTo(px[b][0],px[b][1]);ctx.stroke();}
+  ctx.restore();
+  ctx.save();ctx.fillStyle='#ff2200';ctx.shadowBlur=8;ctx.shadowColor='#ff6600';
+  for(const pt of px){ctx.beginPath();ctx.arc(pt[0],pt[1],4,0,TWO_PI);ctx.fill();}
+  ctx.restore();
+}
+
+function isFist(lms){
+  const tips=[8,12,16,20],pips=[6,10,14,18];
+  let c=0;for(let i=0;i<4;i++)if(lms[tips[i]].y>lms[pips[i]].y)c++;
+  return c>=3;
+}
+
+let palmL=[0,0],palmR=[0,0];
+let fistWasL=false,fistWasR=false;
+let oneActive=false,twoActive=false;
+
+function resetVid(vid){
+  vid.pause();
+  vid.currentTime=0;
+  vid.style.display='none';
+}
+
+function show(vid,cx,cy){
+  vid.style.left=cx+'px';vid.style.top=cy+'px';
+  vid.style.display='block';
+  if(vid.paused){vid.currentTime=0;vid.play().catch(()=>{});}
+}
+function hide(vid){vid.style.display='none';}
+
+function onResults(res){
+  canvas.width=window.innerWidth;canvas.height=window.innerHeight;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  let L=null,R=null;
+  if(res.multiHandLandmarks&&res.multiHandedness){
+    res.multiHandLandmarks.forEach((lms,i)=>{
+      const px=toDisplay(lms);
+      if(res.multiHandedness[i].label==='Right')L={lms,px};
+      else R={lms,px};
+    });
+  }
+
+  const fistL = L && isFist(L.lms);
+  const fistR = R && isFist(R.lms);
+
+  if(L){drawMesh(L.px);if(!fistL)palmL=palmCtr(L.px);}
+  if(R){drawMesh(R.px);if(!fistR)palmR=palmCtr(R.px);}
+  if(fistL && !fistWasL){ resetVid(oneVid); oneActive=false; }
+  if(fistR && !fistWasR){ resetVid(oneVid); oneActive=false; }
+  if((fistL||fistR)){ resetVid(twoVid); twoActive=false; }
+  fistWasL=!!fistL; fistWasR=!!fistR;
+  const openL = L && !fistL;
+  const openR = R && !fistR;
+
+  if(openL && openR){
+    const cx=(palmL[0]+palmR[0])/2, cy=(palmL[1]+palmR[1])/2;
+    show(twoVid,cx,cy); twoActive=true;
+    if(!twoActive){ resetVid(oneVid); }
+    hide(oneVid); oneActive=false;
+  } else if(openL || openR){
+    const[cx,cy]=openL?palmL:palmR;
+    show(oneVid,cx,cy); oneActive=true;
+    hide(twoVid); twoActive=false;
+  } else {
+    hide(oneVid); oneActive=false;
+    hide(twoVid); twoActive=false;
+  }
+}
+
+(function init(){
+  const mp=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  mp.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:0.7,minTrackingConfidence:0.6});
+  mp.onResults(onResults);
+  new Camera(webcam,{onFrame:async()=>await mp.send({image:webcam}),width:1280,height:720}).start();
+  [oneVid,twoVid].forEach(v=>{v.play().catch(()=>{});v.pause();});
+})();
+</script>
+</body>
+</html>
